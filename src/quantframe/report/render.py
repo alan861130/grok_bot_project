@@ -265,16 +265,31 @@ def _md_list_and_tables_to_html(lines: list[str]) -> list[str]:
         if line.startswith("- "):
             items = []
             while i < len(lines) and lines[i].startswith("- "):
-                items.append(f"<li>{html.escape(lines[i][2:])}</li>")
+                items.append(f"<li>{_inline_md(lines[i][2:])}</li>")
                 i += 1
             out.append("<ul>" + "".join(items) + "</ul>")
             continue
         if line.strip() == "":
             i += 1
             continue
-        out.append(f"<p>{html.escape(line)}</p>")
+        out.append(f"<p>{_inline_md(line)}</p>")
         i += 1
     return out
+
+
+def _inline_md(text: str) -> str:
+    """Escape HTML, then turn `backticks` into <code>."""
+    escaped = html.escape(text)
+    parts = escaped.split("`")
+    if len(parts) < 2 or len(parts) % 2 == 0:
+        return escaped
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        if i % 2:
+            out.append(f"<code>{part}</code>")
+        else:
+            out.append(part)
+    return "".join(out)
 
 
 def _md_table_to_html(rows: list[str]) -> str:

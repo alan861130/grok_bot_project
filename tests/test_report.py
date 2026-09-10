@@ -48,8 +48,10 @@ def test_write_reports_creates_both_files(tmp_path: Path) -> None:
     assert md_path.exists() and html_path.exists()
     assert md_path.name == "sma_crossover_SYN.md"
     assert html_path.name == "sma_crossover_SYN.html"
+    html_text = html_path.read_text(encoding="utf-8")
     assert "Performance Summary" in md_path.read_text(encoding="utf-8")
-    assert "<table>" in html_path.read_text(encoding="utf-8")
+    assert "<table>" in html_text
+    assert "<code>sma_crossover</code>" in html_text
 
 
 def test_empty_trade_list_still_renders() -> None:
