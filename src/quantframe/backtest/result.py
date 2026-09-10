@@ -1,4 +1,4 @@
-"""Backtest result containers."""
+"""Backtest result containers (portfolio)."""
 
 from __future__ import annotations
 
@@ -9,21 +9,24 @@ from typing import Any
 import pandas as pd
 
 from quantframe.backtest.commission import Commission
+from quantframe.types import BarsBySymbol
 
 
 @dataclass
 class Fill:
     date: pd.Timestamp
+    symbol: str
     side: str  # "BUY" | "SELL"
     shares: int
     price: float
     commission: float
     cash_after: float
-    shares_after: int
+    position_after: int
 
 
 @dataclass
 class RoundTrip:
+    symbol: str
     entry_date: pd.Timestamp
     exit_date: pd.Timestamp | None
     side: str  # "LONG"
@@ -35,13 +38,16 @@ class RoundTrip:
     pnl: float | None
     return_pct: float | None
     open: bool = False
+    buy_notional: float = 0.0
+    peak_shares: int = 0
 
     def as_row(self) -> dict[str, Any]:
         return {
+            "symbol": self.symbol,
             "entry_date": self.entry_date.date().isoformat(),
             "exit_date": None if self.exit_date is None else self.exit_date.date().isoformat(),
             "side": self.side,
-            "shares": self.shares,
+            "shares": self.peak_shares or self.shares,
             "entry_price": self.entry_price,
             "exit_price": self.exit_price,
             "entry_commission": self.entry_commission,
@@ -54,20 +60,26 @@ class RoundTrip:
 
 @dataclass
 class BacktestResult:
-    symbol: str
+    universe: list[str]
     start: date
     end: date
     strategy_name: str
     strategy_params: dict[str, Any]
     initial_cash: float
     commission: Commission
-    bars: pd.DataFrame
-    signals: pd.Series
+    bars: BarsBySymbol
+    signals: pd.DataFrame
+    weights: pd.DataFrame
     equity_curve: pd.Series
+    exposure: pd.Series
     fills: list[Fill]
     round_trips: list[RoundTrip]
     metrics: dict[str, float | int | None] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+
+    @property
+    def universe_label(self) -> str:
+        return ", ".join(self.universe)
 
     @property
     def ending_equity(self) -> float:

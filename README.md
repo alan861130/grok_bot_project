@@ -1,6 +1,6 @@
 # quantframe — Phase 1
 
-US equities quantitative trading framework: **daily OHLCV**, research backtests, and fixed-layout reports.
+US equities quantitative trading framework: **daily OHLCV**, **portfolio** backtests, and fixed-layout reports.
 
 Phase 1 is a Python library + CLI. There is **no web dashboard** and **no live broker / order API**.
 
@@ -12,12 +12,12 @@ Phase 1 is a Python library + CLI. There is **no web dashboard** and **no live b
 
 | Piece | Role |
 | --- | --- |
-| `quantframe.data` | `DataProvider` ABC; default `YFinanceDataProvider` (US daily bars) |
-| `quantframe.strategy` | Strategy contract: price history → target weights |
-| `quantframe.backtest` | Long/flat engine, next-open fills, cash + commission |
-| `quantframe.metrics` | Return, CAGR, Sharpe, max DD, win rate, trade count, … |
+| `quantframe.data` | `DataProvider` ABC; default `YFinanceDataProvider` (US daily **adjusted** bars, **multi-ticker** universes) |
+| `quantframe.strategy` | Long-set contract (dates × symbols) → default **equal-weight**; overridable target weights later |
+| `quantframe.backtest` | True **portfolio** engine: equal-weight names currently long, cash when flat |
+| `quantframe.metrics` | Locked set: total return, CAGR, Sharpe, max drawdown, win rate, trade count, ending equity, time-in-market / exposure |
 | `quantframe.report` | Same result → Markdown **and** HTML, same nine sections every run |
-| Sample strategy | SMA crossover (long when fast SMA > slow SMA) |
+| Demo strategy | Multi-asset SMA crossover (golden cross → include, death cross → drop) |
 
 ### Install
 
@@ -32,9 +32,9 @@ pip install -e ".[dev]"
 pytest
 ```
 
-### Run the sample backtest
+### Run the demo portfolio backtest
 
-One command (needs network once, to download SPY via Yahoo Finance):
+One command (needs network once, to download the universe via Yahoo Finance):
 
 ```bash
 quantframe run-sample
@@ -46,10 +46,22 @@ Equivalent:
 python -m quantframe run-sample
 ```
 
-This runs **SMA 50/200** on **SPY**, **2019-01-01 → 2024-12-31**, **$100,000** starting cash, **1 bp** commission, and writes:
+Defaults:
 
-- `outputs/sma_crossover_SPY.md`
-- `outputs/sma_crossover_SPY.html`
+| Setting | Value |
+| --- | --- |
+| Universe | `SPY, QQQ, AAPL, MSFT, GOOGL` |
+| Strategy | SMA crossover **20 / 50** per name |
+| Lookback | about the **last 5 years** (from the run date) |
+| Initial cash | **100,000 USD** |
+| Commission | **5 bps** of traded notional |
+| Slippage | **none** (hook exists, default is zero) |
+| Execution | **same-session close** (optimistic — see below) |
+
+Writes:
+
+- `outputs/sma_crossover_portfolio.md`
+- `outputs/sma_crossover_portfolio.html`
 
 `outputs/` is gitignored.
 
@@ -57,51 +69,56 @@ Custom run:
 
 ```bash
 quantframe backtest \
-  --symbol SPY \
-  --start 2019-01-01 \
-  --end 2024-12-31 \
-  --fast 50 \
-  --slow 200 \
+  --universe SPY,QQQ,AAPL,MSFT,GOOGL \
+  --start 2021-09-10 \
+  --end 2026-09-10 \
+  --fast 20 \
+  --slow 50 \
   --cash 100000 \
-  --commission-bps 1 \
+  --commission-bps 5 \
   --output-dir outputs
 ```
 
-Use `--commission-fixed 1` for $1 per fill instead of bps.
-
 ### Strategy contract
 
-A strategy maps **already-known** daily bars onto a **target weight** for the symbol:
+A strategy maps a **universe** of daily bars onto a **long set**:
 
-- Input: OHLCV DataFrame, columns `open, high, low, close, volume`, DatetimeIndex.
-- Output: `pd.Series` aligned to that index. Value at `t` uses **only data through the close of bar t**.
-- `1.0` = fully long, `0.0` = flat. Phase 1 clips to `[0, 1]` (long-only / long-flat).
-- The **engine** fills the signal from bar `t` at the **open of bar t+1** (no same-bar close fill, no look-ahead on the fill price).
-- Positions are resized only when the target weight **changes** (all-in / all-out). Whole shares; leftover cash stays in the account.
+- Input: `dict[symbol, OHLCV DataFrame]` (columns `open, high, low, close, volume`).
+- `generate_signals(bars)` → boolean `DataFrame` (index = sessions, columns = symbols). Value at `(t, symbol)` uses **only data through the close of bar t**. `True` = include in the long set.
+- `generate_target_weights(bars)` — **default** equal-weights the long set (row sums to 1, or 0 = 100% cash). Later strategies can **override this method** for non-equal target weights without changing the engine.
+- Phase 1 is **long-only / flat** (no shorting).
 
-See `src/quantframe/strategy/base.py` for the full contract.
+The engine rebalances when the target-weight vector **changes** (for the demo SMA, that is a membership change). Whole shares; leftover cash stays in the account. Universe calendars are **inner-joined**.
+
+See `src/quantframe/strategy/base.py`.
+
+### Execution assumption (important)
+
+Fills use the **same day's close** as the signal. That is **optimistic**: in live trading you generally cannot compute a close-based signal and still transact at that close. There is **no slippage model** in Phase 1.
+
+Prices from the default provider are **adjusted** (`yfinance` `auto_adjust=True`).
 
 ### Report format (fixed)
 
 Every Markdown and HTML report uses this section order:
 
-1. **Run Metadata** — generated time, framework, market / bar size  
-2. **Universe & Data** — symbol, session range, bar count  
-3. **Strategy** — name and parameters  
-4. **Backtest Settings** — cash, commission, sizing rules  
-5. **Performance Summary** — metrics table  
-6. **Equity Curve** — stats + month-end equity (HTML adds a simple SVG)  
-7. **Drawdown** — max DD and dates  
-8. **Trade List** — round trips and next-open fills  
+1. **Run Metadata**
+2. **Universe & Data**
+3. **Strategy**
+4. **Backtest Settings**
+5. **Performance Summary** (locked metric set)
+6. **Equity Curve**
+7. **Drawdown**
+8. **Trade List**
 9. **Assumptions & Disclaimers**
 
 ### Phase 1 boundaries
 
-**In scope:** US equities, daily bars, research backtests, file reports, one sample SMA strategy, offline unit tests (synthetic data, no network).
+**In scope:** US equities, daily bars, multi-name equal-weight portfolio backtests, file reports, SMA 20/50 demo, offline unit tests (synthetic data, no network).
 
-**Out of scope (later phases):** localhost / web dashboard, live brokers, order routing, intraday bars, shorting, portfolio of many names, walk-forward / optimizer UI.
+**Out of scope (later phases):** localhost / web dashboard, live brokers, order routing, intraday bars, shorting, slippage calibration, walk-forward / optimizer UI.
 
-Adding a strategy later: implement `Strategy` (`name`, `params()`, `generate_signals(bars)`), then pass it to `Backtester.run` / `run_bars`.
+Adding a long-set strategy: implement `Strategy.generate_signals`. Adding a target-weight strategy later: override `generate_target_weights`.
 
 ### Tests
 
@@ -117,7 +134,7 @@ CI / local tests must not call the network. `YFinanceDataProvider` is exercised 
 
 ### 這是什麼
 
-Phase 1 是美股、**日線 OHLCV** 的量化回測骨架：資料層、策略介面、回測引擎、績效指標、固定版型報告，以及一支可跑通的 SMA 交叉範例。
+Phase 1 是美股、**日線 OHLCV** 的**投資組合**量化回測骨架：抽象資料層（預設 yfinance、**還原權息價**、支援**多標的宇宙**）、策略介面（多空集合 / 之後可改目標權重）、等權長倉組合引擎、固定指標、固定版型 Markdown + HTML 報告，以及 SMA 20/50 多資產範例。
 
 **沒有**網頁儀表板，**沒有**實盤券商 / 下單 API。
 
@@ -131,7 +148,7 @@ pip install -e ".[dev]"   # 若要跑測試
 pytest
 ```
 
-### 跑範例回測
+### 跑範例組合回測
 
 ```bash
 quantframe run-sample
@@ -139,28 +156,25 @@ quantframe run-sample
 python -m quantframe run-sample
 ```
 
-預設：SPY、SMA 50/200、2019-01-01～2024-12-31、本金 10 萬美元、手續費 1 bp。報告寫入：
+預設宇宙：`SPY, QQQ, AAPL, MSFT, GOOGL`；每股 SMA **20/50**（金叉納入、死叉剔除）；約**近 5 年**；本金 **10 萬美元**；手續費 **5 bps**；**無滑價模型**。報告：
 
-- `outputs/sma_crossover_SPY.md`
-- `outputs/sma_crossover_SPY.html`
-
-（`outputs/` 已加入 `.gitignore`。）
+- `outputs/sma_crossover_portfolio.md`
+- `outputs/sma_crossover_portfolio.html`
 
 ### 策略契約（重點）
 
-- `generate_signals(bars)` 回傳與 K 線對齊的目標權重；**時點 t 只能用到 t 收盤（含）以前的資料**。
-- `1.0` = 滿倉做多，`0.0` = 空手。
-- 引擎在 **t+1 開盤** 成交 t 收盤的訊號，避免用收盤價當日成交造成的前瞻偏差。
-- 權重沒變就持有，不因價格漂移每日再平衡；美股以整股成交。
+- `generate_signals(bars)` 回傳「日期 × 標的」的布林 **long set**；**時點 t 只能用到該標的 t 收盤（含）以前的資料**。
+- 引擎對當日 long set **等權**；集合為空則 100% 現金。之後若要自訂權重，覆寫 `generate_target_weights` 即可。
+- 成交價為**當日收盤**（偏樂觀，README / 報告會註明）。不做空。
 
 ### 報告版型
 
-每次跑都是同一組九個章節（Markdown / HTML 相同順序）：執行資訊、標的與資料、策略、回測設定、績效摘要、權益曲線、回撤、交易明細、假設與聲明。
+每次跑都是同一組九個章節（Markdown / HTML 相同順序）：執行資訊、宇宙與資料、策略、回測設定、績效摘要、權益曲線、回撤、交易明細、假設與聲明。
+
+績效摘要的固定欄位：總報酬、CAGR、Sharpe、最大回撤、勝率、交易次數、期末權益、在場時間 / 曝險。
 
 ### Phase 1 界線
 
 | 有 | 沒有（之後） |
 | --- | --- |
-| 美股日線、檔案報告、範例 SMA、離線單元測試 | 網頁 dashboard、實盤券商、即時下單、盤中 K 線、放空、多標的組合優化 UI |
-
-之後加策略：實作 `Strategy` 即可接到同一套 `Backtester` 與報告。之後加本機 dashboard 或券商，也不需要改這層契約。
+| 美股日線、多標的等權組合、檔案報告、SMA 20/50 範例、離線單元測試 | 網頁 dashboard、實盤券商、即時下單、盤中 K 線、放空、滑價校準 |

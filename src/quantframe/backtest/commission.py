@@ -18,7 +18,7 @@ class Commission:
     """
 
     kind: CommissionKind = "bps"
-    value: float = 1.0
+    value: float = 5.0
 
     def __post_init__(self) -> None:
         if self.kind not in ("fixed", "bps"):

@@ -1,4 +1,4 @@
-"""CLI: run a daily US equity backtest and write Markdown + HTML reports."""
+"""CLI: run a daily US equity *portfolio* backtest and write Markdown + HTML reports."""
 
 from __future__ import annotations
 
@@ -10,45 +10,53 @@ from quantframe import __version__
 from quantframe.backtest.commission import Commission
 from quantframe.backtest.engine import Backtester
 from quantframe.data.yfinance_provider import YFinanceDataProvider
-from quantframe.metrics.calc import compute_metrics
+from quantframe.defaults import (
+    DEMO_CASH,
+    DEMO_COMMISSION_BPS,
+    DEMO_FAST,
+    DEMO_LOOKBACK_YEARS,
+    DEMO_SLOW,
+    DEMO_UNIVERSE,
+    lookback_window,
+)
 from quantframe.report.render import write_reports
 from quantframe.strategy.sma import SMACrossoverStrategy
 
-SAMPLE_SYMBOL = "SPY"
-SAMPLE_START = date(2019, 1, 1)
-SAMPLE_END = date(2024, 12, 31)
-SAMPLE_FAST = 50
-SAMPLE_SLOW = 200
-SAMPLE_CASH = 100_000.0
-SAMPLE_COMMISSION_BPS = 1.0
-
 
 def main(argv: list[str] | None = None) -> int:
+    default_start, default_end = lookback_window()
     parser = argparse.ArgumentParser(
         prog="quantframe",
-        description="Phase-1 US equities quant framework (daily backtests + reports).",
+        description="Phase-1 US equities quant framework (daily portfolio backtests + reports).",
     )
     parser.add_argument("--version", action="version", version=f"quantframe {__version__}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_sample = sub.add_parser(
         "run-sample",
-        help="Run the bundled SPY SMA 50/200 daily backtest and write reports.",
+        help=(
+            "Run the bundled multi-asset SMA 20/50 portfolio backtest "
+            f"({', '.join(DEMO_UNIVERSE)}, last ~{DEMO_LOOKBACK_YEARS} years) and write reports."
+        ),
     )
     p_sample.add_argument("--output-dir", default="outputs", help="Report directory (default: outputs)")
 
-    p_bt = sub.add_parser("backtest", help="Run a daily SMA crossover backtest.")
-    p_bt.add_argument("--symbol", default=SAMPLE_SYMBOL)
-    p_bt.add_argument("--start", default=SAMPLE_START.isoformat(), help="Inclusive start date YYYY-MM-DD")
-    p_bt.add_argument("--end", default=SAMPLE_END.isoformat(), help="Inclusive end date YYYY-MM-DD")
-    p_bt.add_argument("--fast", type=int, default=SAMPLE_FAST)
-    p_bt.add_argument("--slow", type=int, default=SAMPLE_SLOW)
-    p_bt.add_argument("--cash", type=float, default=SAMPLE_CASH)
+    p_bt = sub.add_parser("backtest", help="Run a daily SMA crossover portfolio backtest.")
+    p_bt.add_argument(
+        "--universe",
+        default=",".join(DEMO_UNIVERSE),
+        help="Comma-separated tickers (default: SPY,QQQ,AAPL,MSFT,GOOGL)",
+    )
+    p_bt.add_argument("--start", default=default_start.isoformat(), help="Inclusive start date YYYY-MM-DD")
+    p_bt.add_argument("--end", default=default_end.isoformat(), help="Inclusive end date YYYY-MM-DD")
+    p_bt.add_argument("--fast", type=int, default=DEMO_FAST)
+    p_bt.add_argument("--slow", type=int, default=DEMO_SLOW)
+    p_bt.add_argument("--cash", type=float, default=DEMO_CASH)
     p_bt.add_argument(
         "--commission-bps",
         type=float,
         default=None,
-        help="Commission in bps of notional (default 1). Mutually exclusive with --commission-fixed.",
+        help=f"Commission in bps of notional (default {DEMO_COMMISSION_BPS}).",
     )
     p_bt.add_argument(
         "--commission-fixed",
@@ -60,14 +68,15 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.cmd == "run-sample":
+        start, end = lookback_window()
         return _run(
-            symbol=SAMPLE_SYMBOL,
-            start=SAMPLE_START,
-            end=SAMPLE_END,
-            fast=SAMPLE_FAST,
-            slow=SAMPLE_SLOW,
-            cash=SAMPLE_CASH,
-            commission=Commission(kind="bps", value=SAMPLE_COMMISSION_BPS),
+            universe=list(DEMO_UNIVERSE),
+            start=start,
+            end=end,
+            fast=DEMO_FAST,
+            slow=DEMO_SLOW,
+            cash=DEMO_CASH,
+            commission=Commission(kind="bps", value=DEMO_COMMISSION_BPS),
             output_dir=args.output_dir,
         )
     if args.cmd == "backtest":
@@ -76,10 +85,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.commission_fixed is not None:
             commission = Commission(kind="fixed", value=args.commission_fixed)
         else:
-            bps = SAMPLE_COMMISSION_BPS if args.commission_bps is None else args.commission_bps
+            bps = DEMO_COMMISSION_BPS if args.commission_bps is None else args.commission_bps
             commission = Commission(kind="bps", value=bps)
         return _run(
-            symbol=args.symbol,
+            universe=_parse_universe(args.universe),
             start=start,
             end=end,
             fast=args.fast,
@@ -94,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run(
     *,
-    symbol: str,
+    universe: list[str],
     start: date,
     end: date,
     fast: int,
@@ -108,13 +117,12 @@ def _run(
     result = engine.run(
         provider=YFinanceDataProvider(),
         strategy=strategy,
-        symbol=symbol,
+        universe=universe,
         start=start,
         end=end,
     )
-    result.metrics = compute_metrics(result.equity_curve, result.initial_cash, result.round_trips)
     md_path, html_path = write_reports(result, Path(output_dir))
-    print(f"symbol={result.symbol}  bars={len(result.bars)}  {result.start} → {result.end}")
+    print(f"universe={result.universe_label}  sessions={len(result.equity_curve)}  {result.start} → {result.end}")
     print(f"strategy={result.strategy_name}  params={result.strategy_params}")
     print(f"ending_equity={result.ending_equity:,.2f}  total_return={result.metrics.get('total_return')}")
     print(f"wrote {md_path}")
@@ -124,3 +132,10 @@ def _run(
 
 def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _parse_universe(value: str) -> list[str]:
+    names = [part.strip().upper() for part in value.split(",") if part.strip()]
+    if not names:
+        raise SystemExit("universe is empty")
+    return names

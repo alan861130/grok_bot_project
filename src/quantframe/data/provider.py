@@ -1,16 +1,17 @@
 """Market data providers.
 
-Phase 1: US equities, daily OHLCV bars.
+Phase 1: US equities, daily OHLCV bars, multi-ticker universes.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import date
+from collections.abc import Sequence
 
 import pandas as pd
 
-from quantframe.types import OHLCV_COLUMNS
+from quantframe.types import OHLCV_COLUMNS, BarsBySymbol
 
 
 class DataProvider(ABC):
@@ -21,11 +22,36 @@ class DataProvider(ABC):
     - is sorted ascending
     - contains columns: open, high, low, close, volume
     - includes both ``start`` and ``end`` when those sessions exist (inclusive)
+
+    Prices are **adjusted** for splits/dividends when the source supports it
+    (yfinance default uses ``auto_adjust=True``).
     """
 
     @abstractmethod
     def get_daily_bars(self, symbol: str, start: date, end: date) -> pd.DataFrame:
         """Fetch daily OHLCV for ``symbol`` from ``start`` through ``end`` (inclusive)."""
+
+    def get_universe_bars(
+        self,
+        symbols: Sequence[str],
+        start: date,
+        end: date,
+    ) -> BarsBySymbol:
+        """Fetch daily OHLCV for a universe. Default: one call per symbol.
+
+        Keys are uppercase tickers. Subclasses may batch the request.
+        """
+        universe = _normalize_symbols(symbols)
+        frames: BarsBySymbol = {}
+        errors: list[str] = []
+        for sym in universe:
+            try:
+                frames[sym] = self.get_daily_bars(sym, start, end)
+            except (KeyError, ValueError) as exc:
+                errors.append(f"{sym}: {exc}")
+        if errors:
+            raise ValueError("failed to load universe bars: " + "; ".join(errors))
+        return frames
 
 
 class PandasDataProvider(DataProvider):
@@ -47,6 +73,52 @@ class PandasDataProvider(DataProvider):
         return out
 
 
+def align_universe(frames: BarsBySymbol, *, how: str = "inner") -> BarsBySymbol:
+    """Align a universe onto one session index.
+
+    ``how="inner"`` (Phase 1 default): keep sessions present for every name.
+    """
+    if not frames:
+        raise ValueError("universe is empty")
+    cleaned = {sym.upper(): _normalize_ohlcv(df) for sym, df in frames.items()}
+    symbols = list(cleaned)
+    index = cleaned[symbols[0]].index
+    for sym in symbols[1:]:
+        if how == "inner":
+            index = index.intersection(cleaned[sym].index)
+        elif how == "outer":
+            index = index.union(cleaned[sym].index)
+        else:
+            raise ValueError("how must be 'inner' or 'outer'")
+    index = index.sort_values()
+    if len(index) == 0:
+        raise ValueError("universe has no overlapping sessions")
+    aligned: BarsBySymbol = {}
+    for sym in symbols:
+        piece = cleaned[sym].reindex(index) if how == "outer" else cleaned[sym].loc[index]
+        if how == "outer":
+            piece = piece.dropna(subset=["open", "high", "low", "close"])
+        aligned[sym] = piece
+    if how == "inner":
+        return aligned
+    # Outer join may drop to different lengths; re-inner the surviving dates.
+    return align_universe(aligned, how="inner")
+
+
+def _normalize_symbols(symbols: Sequence[str]) -> list[str]:
+    universe = [s.strip().upper() for s in symbols if str(s).strip()]
+    if not universe:
+        raise ValueError("universe is empty")
+    # Preserve order, drop duplicates
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in universe:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
 def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce a raw frame into the Phase-1 OHLCV contract."""
     if df.empty:
@@ -58,7 +130,6 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     for col in work.columns:
         if col in OHLCV_COLUMNS:
             continue
-        # yfinance / CSV variants
         mapping = {
             "adj close": "close",
             "adj_close": "close",

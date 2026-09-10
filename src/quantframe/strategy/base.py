@@ -2,33 +2,38 @@
 
 Contract
 --------
-A strategy maps **price history that is already known** onto a **target
-position** for the traded symbol.
+A Phase-1 strategy maps **already-known** daily bars for a **universe** onto
+a **long set** (boolean membership). The engine then **equal-weights** names
+that are in the long set that session and holds cash when the set is empty.
 
 Input
-    ``bars``: daily OHLCV DataFrame (see ``DataProvider``). Sorted by date.
-    Columns: open, high, low, close, volume.
+    ``bars``: ``dict[symbol, DataFrame]`` of daily OHLCV (see ``DataProvider``).
+    Frames share a session index after the engine aligns the universe
+    (inner join of trading calendars).
 
-Output
-    ``pd.Series`` of target weights, **aligned to ``bars.index``**.
-    The value at timestamp ``t`` is the desired weight in the symbol using
-    **only information available at or before the close of bar ``t``**.
+Output of ``generate_signals``
+    ``pd.DataFrame`` of booleans (or 0/1), **index = sessions**, **columns = symbols**.
+    Value at ``(t, symbol)`` uses **only information through the close of bar t**
+    for that symbol (rolling windows that end at ``t`` are valid).
 
-    Weight meaning (Phase 1, long-only / long-flat):
-        1.0 = fully invested long
-        0.0 = flat (100% cash)
-        Values are clipped to [0, 1] by the engine.
+    True / 1 = include in the long set that session.
+    False / 0 = do not hold.
+
+    Warm-up rows should be False.
+
+Output of ``generate_target_weights`` (optional override)
+    ``pd.DataFrame`` of non-negative weights, same shape. Each row should sum
+    to at most 1.0; the remainder is cash. The **default implementation**
+    equal-weights the long set from ``generate_signals``. Later strategies
+    can override this method for non-equal target weights without changing
+    the engine.
 
 Execution (engine, not strategy)
-    The backtester fills the signal from bar ``t`` at the **open of bar t+1**.
-    Same-bar fills on the close of ``t`` are intentionally not used, so a
-    strategy cannot trade on information that would not have been available
-    at the fill.
-
-Look-ahead
-    The engine does not peek at future bars when filling. Strategies **must
-    not** use future rows when computing ``signal[t]``. Rolling windows that
-    end at ``t`` (e.g. SMA) are valid; shifting indicators the wrong way is not.
+    Phase 1 fills at the **same session close** as the signal (optimistic;
+    you would not generally be able to transact at a close you just used
+    to compute the signal). Documented in reports and the README.
+    No shorting. Rebalance when the target-weight vector changes
+    (membership change for equal-weight SMA).
 """
 
 from __future__ import annotations
@@ -38,9 +43,12 @@ from typing import Any
 
 import pandas as pd
 
+from quantframe.strategy.weights import equal_weight_long_set
+from quantframe.types import BarsBySymbol
+
 
 class Strategy(ABC):
-    """Price history → target weights. See module docstring for the contract."""
+    """Universe bars → long set (and, by default, equal-weight targets)."""
 
     @property
     @abstractmethod
@@ -52,5 +60,12 @@ class Strategy(ABC):
         """JSON-serializable parameters for the report."""
 
     @abstractmethod
-    def generate_signals(self, bars: pd.DataFrame) -> pd.Series:
-        """Return target weights aligned with ``bars.index`` (see contract)."""
+    def generate_signals(self, bars: BarsBySymbol) -> pd.DataFrame:
+        """Boolean long-set membership (dates × symbols). See module docstring."""
+
+    def generate_target_weights(self, bars: BarsBySymbol) -> pd.DataFrame:
+        """Target portfolio weights. Default: equal-weight the long set.
+
+        Override in later phases for explicit target-weight strategies.
+        """
+        return equal_weight_long_set(self.generate_signals(bars))

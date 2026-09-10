@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from quantframe.backtest.result import RoundTrip
-from quantframe.metrics.calc import compute_metrics, max_drawdown
+from quantframe.metrics.calc import LOCKED_METRIC_KEYS, compute_metrics, max_drawdown
 
 
 def _equity(values: list[float], start: str = "2020-01-02") -> pd.Series:
@@ -18,10 +18,11 @@ def test_total_return_and_trade_stats() -> None:
     eq = _equity([100.0, 110.0, 105.0])
     trips = [
         RoundTrip(
+            symbol="AAA",
             entry_date=eq.index[0],
             exit_date=eq.index[1],
             side="LONG",
-            shares=1,
+            shares=0,
             entry_price=100.0,
             exit_price=110.0,
             entry_commission=0.0,
@@ -29,12 +30,14 @@ def test_total_return_and_trade_stats() -> None:
             pnl=10.0,
             return_pct=0.10,
             open=False,
+            peak_shares=1,
         ),
         RoundTrip(
+            symbol="BBB",
             entry_date=eq.index[1],
             exit_date=eq.index[2],
             side="LONG",
-            shares=1,
+            shares=0,
             entry_price=110.0,
             exit_price=105.0,
             entry_commission=0.0,
@@ -42,16 +45,19 @@ def test_total_return_and_trade_stats() -> None:
             pnl=-5.0,
             return_pct=-5 / 110,
             open=False,
+            peak_shares=1,
         ),
     ]
-    m = compute_metrics(eq, initial_cash=100.0, round_trips=trips)
+    exposure = pd.Series([1.0, 1.0, 0.0], index=eq.index)
+    m = compute_metrics(eq, initial_cash=100.0, round_trips=trips, exposure=exposure)
     assert m["total_return"] == pytest.approx(0.05)
     assert m["ending_equity"] == pytest.approx(105.0)
     assert m["trade_count"] == 2
     assert m["win_rate"] == pytest.approx(0.5)
-    assert m["avg_win"] == pytest.approx(10.0)
-    assert m["avg_loss"] == pytest.approx(-5.0)
-    assert m["profit_factor"] == pytest.approx(10.0 / 5.0)
+    assert m["time_in_market"] == pytest.approx(2 / 3)
+    assert m["avg_exposure"] == pytest.approx(2 / 3)
+    for key in LOCKED_METRIC_KEYS:
+        assert key in m
 
 
 def test_max_drawdown() -> None:
@@ -66,13 +72,12 @@ def test_sharpe_none_when_flat() -> None:
     eq = _equity([100.0, 100.0, 100.0, 100.0])
     m = compute_metrics(eq, initial_cash=100.0, round_trips=[])
     assert m["sharpe"] is None
-    assert m["volatility"] == pytest.approx(0.0)
     assert m["win_rate"] is None
     assert m["trade_count"] == 0
+    assert m["time_in_market"] == pytest.approx(0.0)
 
 
 def test_cagr_positive_on_up_trend() -> None:
-    # ~1y of business days, 100 → 200
     idx = pd.bdate_range("2020-01-02", periods=253)
     eq = pd.Series([100.0 + i * (100.0 / 252) for i in range(253)], index=idx)
     m = compute_metrics(eq, initial_cash=100.0, round_trips=[])

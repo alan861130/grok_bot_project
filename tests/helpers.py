@@ -5,25 +5,24 @@ from __future__ import annotations
 import pandas as pd
 
 from quantframe.strategy.base import Strategy
+from quantframe.types import BarsBySymbol
 
 
 class ScriptedStrategy(Strategy):
-    """Emits a pre-baked weight series so tests control the contract."""
+    """Emits a pre-baked boolean long set (dates × symbols)."""
 
-    def __init__(self, weights: list[float]) -> None:
-        self._weights = weights
+    def __init__(self, membership: pd.DataFrame) -> None:
+        self._membership = membership.astype(bool)
 
     @property
     def name(self) -> str:
         return "scripted"
 
     def params(self) -> dict:
-        return {"n": len(self._weights)}
+        return {"symbols": list(self._membership.columns)}
 
-    def generate_signals(self, bars: pd.DataFrame) -> pd.Series:
-        if len(self._weights) != len(bars):
-            raise AssertionError("script length must match bars")
-        return pd.Series(self._weights, index=bars.index, name="target_weight")
+    def generate_signals(self, bars: BarsBySymbol) -> pd.DataFrame:
+        return self._membership
 
 
 def trending_ohlcv(
@@ -46,7 +45,11 @@ def trending_ohlcv(
     return pd.DataFrame(rows, index=idx)
 
 
-def custom_ohlcv(opens: list[float], closes: list[float], start: str = "2020-01-02") -> pd.DataFrame:
+def custom_ohlcv(
+    opens: list[float],
+    closes: list[float],
+    start: str = "2020-01-02",
+) -> pd.DataFrame:
     if len(opens) != len(closes):
         raise ValueError("opens and closes must be the same length")
     idx = pd.bdate_range(start=start, periods=len(closes))
@@ -62,3 +65,7 @@ def custom_ohlcv(opens: list[float], closes: list[float], start: str = "2020-01-
             }
         )
     return pd.DataFrame(rows, index=idx)
+
+
+def long_set(index: pd.DatetimeIndex, flags: dict[str, list[bool]]) -> pd.DataFrame:
+    return pd.DataFrame(flags, index=index)

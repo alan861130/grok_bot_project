@@ -7,7 +7,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from quantframe.data.provider import PandasDataProvider, _normalize_ohlcv
+from quantframe.data.provider import PandasDataProvider, _normalize_ohlcv, align_universe
 from tests.helpers import custom_ohlcv
 
 
@@ -28,10 +28,20 @@ def test_normalize_lowercases_and_sorts() -> None:
     assert out.index[0] < out.index[1]
 
 
-def test_pandas_provider_inclusive_range() -> None:
-    bars = custom_ohlcv(opens=[10, 10, 10], closes=[10, 11, 12])
-    provider = PandasDataProvider({"aaa": bars})
-    got = provider.get_daily_bars("AAA", start=date(2020, 1, 2), end=date(2020, 1, 3))
-    assert len(got) == 2
-    with pytest.raises(KeyError):
-        provider.get_daily_bars("BBB", start=date(2020, 1, 2), end=date(2020, 1, 3))
+def test_pandas_provider_universe() -> None:
+    a = custom_ohlcv(opens=[10, 10, 10], closes=[10, 11, 12])
+    b = custom_ohlcv(opens=[20, 20, 20], closes=[20, 21, 22])
+    provider = PandasDataProvider({"aaa": a, "bbb": b})
+    uni = provider.get_universe_bars(["AAA", "BBB"], start=date(2020, 1, 2), end=date(2020, 1, 3))
+    assert set(uni) == {"AAA", "BBB"}
+    assert len(uni["AAA"]) == 2
+    with pytest.raises(ValueError, match="CCC"):
+        provider.get_universe_bars(["AAA", "BBB", "CCC"], start=date(2020, 1, 2), end=date(2020, 1, 3))
+
+
+def test_align_universe_inner_join() -> None:
+    a = custom_ohlcv(opens=[10, 10, 10], closes=[10, 11, 12])
+    b = custom_ohlcv(opens=[20, 20], closes=[20, 21])
+    aligned = align_universe({"AAA": a, "BBB": b}, how="inner")
+    assert len(aligned["AAA"]) == 2
+    assert list(aligned["AAA"].index) == list(aligned["BBB"].index)
